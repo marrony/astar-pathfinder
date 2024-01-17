@@ -8,12 +8,13 @@ fn AStar(comptime Size: usize) type {
     const BitSet = std.StaticBitSet(GridSize);
     const InvalidIndex = GridSize;
     const MaxScore = 0xffffffff;
+    const MaxWeight = 10;
 
     return struct {
         grid: [GridSize]Cell = undefined,
         previous: [GridSize]usize = undefined,
-        openSet: BitSet = undefined,
-        closedSet: BitSet = undefined,
+        openSet: BitSet = undefined, // nodes to be evaluated
+        closedSet: BitSet = undefined, // nodes already evaluated
 
         const Self = @This();
 
@@ -36,8 +37,8 @@ fn AStar(comptime Size: usize) type {
                 const ii = @as(i32, @intCast(i)) + x;
                 const jj = @as(i32, @intCast(j)) + y;
 
-                if (ii < 0) return InvalidIndex;
-                if (jj < 0) return InvalidIndex;
+                if (ii < 0 or ii >= Size) return InvalidIndex;
+                if (jj < 0 or jj >= Size) return InvalidIndex;
 
                 return @as(usize, @intCast(jj)) * Size + @as(usize, @intCast(ii));
             }
@@ -49,7 +50,7 @@ fn AStar(comptime Size: usize) type {
         };
 
         const ResultKind = enum {
-            Failure,
+            NoPath,
             Path,
         };
 
@@ -62,7 +63,7 @@ fn AStar(comptime Size: usize) type {
         };
 
         fn cellKind(rnd: std.rand.Random) CellKind {
-            if (rnd.float(f32) < 0.2)
+            if (rnd.float(f32) < 0.3)
                 return .Wall;
 
             return .Empty;
@@ -110,7 +111,7 @@ fn AStar(comptime Size: usize) type {
                         .kind = cellKind(rnd.random()),
                         .fScore = MaxScore,
                         .gScore = MaxScore,
-                        .weight = rnd.random().intRangeLessThan(usize, 1, 10),
+                        .weight = rnd.random().intRangeLessThan(usize, 1, MaxWeight),
                     };
                 }
             }
@@ -133,11 +134,12 @@ fn AStar(comptime Size: usize) type {
                 for (0..Size) |j| {
                     const index = j * Size + i;
 
-                    self.grid[index].weight = rnd.random().intRangeLessThan(usize, 1, 10);
+                    self.grid[index].weight = rnd.random().intRangeLessThan(usize, 1, MaxWeight);
                 }
             }
         }
 
+        /// squared Euclidian distance
         pub fn heuristic(a: usize, b: usize) usize {
             const ia = Index.init(a);
             const ib = Index.init(b);
@@ -145,7 +147,6 @@ fn AStar(comptime Size: usize) type {
             const x = @as(i32, @intCast(ib.x)) - @as(i32, @intCast(ia.x));
             const y = @as(i32, @intCast(ib.y)) - @as(i32, @intCast(ia.y));
             const h = x * x + y * y;
-            //const h = @abs(x) + @abs(y);
 
             return @intCast(h);
         }
@@ -221,7 +222,7 @@ fn AStar(comptime Size: usize) type {
                 }
             }
 
-            return .Failure;
+            return .NoPath;
         }
 
         pub fn drawRect(index: usize, rectWidth: usize, rectHeight: usize, color: ray.Color) void {
@@ -236,25 +237,47 @@ fn AStar(comptime Size: usize) type {
             );
         }
 
-        pub fn draw(self: *const Self, width: u32, height: u32, start: usize, end: usize) void {
+        pub fn draw(self: *const Self, font: ray.Font, width: u32, height: u32, start: usize, end: usize, drawOpenSet: bool, drawClosedSet: bool, drawPath: bool) void {
             const rectWidth = width / Size;
             const rectHeight = height / Size;
 
-            {
+            if (drawOpenSet) {
                 var openSet = self.openSet.iterator(.{});
                 while (openSet.next()) |open| {
-                    drawRect(open, rectWidth, rectHeight, ray.YELLOW);
+                    const color: ray.Color = .{
+                        .r = 255, //@intCast(255 * self.grid[open].weight / 10),
+                        .g = 255, //@intCast(255 * self.grid[open].weight / 10),
+                        .b = 0,
+                        .a = 255,
+                    };
+                    drawRect(open, rectWidth, rectHeight, color);
                 }
+            }
 
+            if (drawClosedSet) {
                 var closedSet = self.closedSet.iterator(.{});
                 while (closedSet.next()) |closed| {
-                    drawRect(closed, rectWidth, rectHeight, ray.RED);
+                    const color: ray.Color = .{
+                        .r = 255, //@intCast(255 * self.grid[closed].weight / 10),
+                        .g = 0,
+                        .b = 0,
+                        .a = 255,
+                    };
+                    drawRect(closed, rectWidth, rectHeight, color);
                 }
+            }
 
+            if (drawPath) {
                 var current = end;
 
                 while (current != InvalidIndex) {
-                    drawRect(current, rectWidth, rectHeight, ray.GREEN);
+                    const color: ray.Color = .{
+                        .r = 0,
+                        .g = 255, //@intCast(255 * self.grid[current].weight / 10),
+                        .b = 0,
+                        .a = 255,
+                    };
+                    drawRect(current, rectWidth, rectHeight, color);
 
                     current = self.previous[current];
                 }
@@ -281,46 +304,41 @@ fn AStar(comptime Size: usize) type {
 
                     if (cell.fScore < MaxScore) {
                         const fontSize = 20;
+
                         {
                             const text = std.fmt.bufPrintZ(&buff, "{}/{}", .{ cell.fScore, cell.gScore }) catch unreachable;
-                            const textSize: u32 = @min(@as(u32, @intCast(rectWidth)), @as(u32, @intCast(ray.MeasureText(text.ptr, fontSize))));
+                            const textSize = ray.MeasureTextEx(font, text.ptr, fontSize, 1);
 
-                            ray.DrawText(
+                            ray.DrawTextEx(
+                                font,
                                 text.ptr,
-                                @intCast(x + rectWidth / 2 - textSize / 2),
-                                @intCast(y + rectHeight / 2 - fontSize / 2),
+                                .{
+                                    .x = @as(f32, @floatFromInt(x + rectWidth / 2)) - textSize.x / 2,
+                                    .y = @as(f32, @floatFromInt(y + rectHeight / 2)) - textSize.y / 2,
+                                },
                                 fontSize,
+                                1,
                                 ray.BLUE,
                             );
                         }
 
                         {
                             const text = std.fmt.bufPrintZ(&buff, "w={}", .{cell.weight}) catch unreachable;
-                            const textSize: u32 = @min(@as(u32, @intCast(rectWidth)), @as(u32, @intCast(ray.MeasureText(text.ptr, fontSize))));
+                            const textSize = ray.MeasureTextEx(font, text.ptr, fontSize, 1);
 
-                            ray.DrawText(
+                            ray.DrawTextEx(
+                                font,
                                 text.ptr,
-                                @intCast(x + rectWidth / 2 - textSize / 2),
-                                @intCast(y + rectHeight / 2 - fontSize / 2 + fontSize),
+                                .{
+                                    .x = @as(f32, @floatFromInt(x + rectWidth / 2)) - textSize.x / 2,
+                                    .y = @as(f32, @floatFromInt(y + rectHeight / 2)) - textSize.y / 2 + fontSize,
+                                },
                                 fontSize,
+                                1,
                                 ray.BLUE,
                             );
                         }
                     }
-
-                    // {
-                    //     const fontSize = 16;
-                    //     const text = std.fmt.bufPrintZ(&buff, "{}", .{index}) catch unreachable;
-                    //     //const textSize: u32 = @intCast(ray.MeasureText(text.ptr, fontSize));
-                    //
-                    //     ray.DrawText(
-                    //         text.ptr,
-                    //         @intCast(x + 2),
-                    //         @intCast(y + 2),
-                    //         fontSize,
-                    //         ray.BLUE,
-                    //     );
-                    // }
                 }
             }
         }
@@ -332,13 +350,66 @@ const WindowHeight = 1050;
 const CellCount = 15;
 const Grid = AStar(CellCount);
 
+fn drawHelp(font: ray.Font) void {
+    const helpTexts = [_][*c]const u8{
+        "Help",
+        "W = Update grid weights",
+        "D = Enable/Disable diagonal",
+        "R = Refresh grid",
+        "O = Draw open set",
+        "C = Draw closed set",
+        "P = Draw path",
+        "Arrow keys = Move goal",
+    };
+
+    const padding = 10;
+    const fontSize = 35;
+    const h = helpTexts.len * fontSize + 2 * padding;
+
+    var w: f32 = 0;
+    for (helpTexts) |text| {
+        const m = ray.MeasureTextEx(font, text, fontSize, 1);
+        w = @max(w, m.x);
+    }
+
+    ray.DrawRectangle(
+        @intCast(0),
+        @intCast(WindowHeight - h),
+        @as(i32, @intFromFloat(w + 2 * padding)),
+        @intCast(h),
+        .{ .r = 0, .g = 0, .b = 0, .a = 200 },
+    );
+
+    const y: f32 = WindowHeight - h + padding;
+
+    for (helpTexts, 0..) |text, i| {
+        ray.DrawTextEx(
+            font,
+            text,
+            .{
+                .x = padding,
+                .y = y + @as(f32, @floatFromInt(i)) * fontSize,
+            },
+            fontSize,
+            1,
+            ray.WHITE,
+        );
+    }
+}
+
 var grid: Grid = .{};
 
 pub fn main() !void {
     ray.InitWindow(WindowWidth, WindowHeight, "A* pathfinder");
     defer ray.CloseWindow();
 
-    var diag = false;
+    const font = ray.LoadFontEx("fonts/MonacoNerdFont-Regular.ttf", 128, null, 95);
+    defer ray.UnloadFont(font);
+
+    var diag = true;
+    var drawOpenSet = true;
+    var drawClosedSet = true;
+    var drawPath = true;
 
     grid.reset(diag);
 
@@ -363,6 +434,18 @@ pub fn main() !void {
 
         if (ray.IsKeyPressed(ray.KEY_W)) {
             grid.updateWeight();
+        }
+
+        if (ray.IsKeyPressed(ray.KEY_O)) {
+            drawOpenSet = !drawOpenSet;
+        }
+
+        if (ray.IsKeyPressed(ray.KEY_C)) {
+            drawClosedSet = !drawClosedSet;
+        }
+
+        if (ray.IsKeyPressed(ray.KEY_P)) {
+            drawPath = !drawPath;
         }
 
         if (ray.IsKeyPressed(ray.KEY_UP)) {
@@ -395,9 +478,9 @@ pub fn main() !void {
 
         ray.ClearBackground(ray.WHITE);
 
-        grid.draw(WindowWidth, WindowHeight, start, end);
+        grid.draw(font, WindowWidth, WindowHeight, start, end, drawOpenSet, drawClosedSet, drawPath);
 
-        //ray.DrawFPS(10, 10);
+        drawHelp(font);
 
         ray.EndDrawing();
     }
