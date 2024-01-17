@@ -1,4 +1,4 @@
-# A* pathfinder
+# A* pathfinding
 
 <p align=center>
   <img src="./resources/screen.png">
