@@ -3,14 +3,14 @@ const ray = @cImport({
     @cInclude("raylib.h");
 });
 
-fn AStar(comptime Size: usize) type {
-    const GridSize = Size * Size;
-    const BitSet = std.StaticBitSet(GridSize);
-    const InvalidIndex = GridSize;
-    const MaxScore = 0xffffffff;
-    const MaxWeight = 10;
-
+fn AStar(comptime Size: u32) type {
     return struct {
+        const GridSize = Size * Size;
+        const BitSet = std.StaticBitSet(GridSize);
+        const InvalidIndex = std.math.maxInt(usize);
+        const MaxScore = std.math.maxInt(u32);
+        const MaxWeight = 10;
+
         grid: [GridSize]Cell = undefined,
         previous: [GridSize]usize = undefined,
         openSet: BitSet = undefined, // nodes to be evaluated
@@ -19,13 +19,17 @@ fn AStar(comptime Size: usize) type {
         const Self = @This();
 
         const Position = struct {
-            x: usize,
-            y: usize,
+            // this ensures x & y can only hold values between [0, Size-1]
+            // ie: if Size=16 then T=u4
+            const T = std.math.Log2Int(std.meta.Int(.unsigned, Size));
+
+            x: T,
+            y: T,
 
             pub fn init(index: usize) Position {
                 return .{
-                    .x = index % Size,
-                    .y = index / Size,
+                    .x = @intCast(index % Size),
+                    .y = @intCast(index / Size),
                 };
             }
 
@@ -62,9 +66,9 @@ fn AStar(comptime Size: usize) type {
         const Cell = struct {
             neighbors: [8]usize = undefined,
             kind: CellKind = undefined,
-            fScore: usize = undefined,
-            gScore: usize = undefined,
-            weight: usize = undefined,
+            fScore: u32 = undefined,
+            gScore: u32 = undefined,
+            weight: u32 = undefined,
         };
 
         fn cellKind(rnd: std.rand.Random) CellKind {
@@ -113,7 +117,7 @@ fn AStar(comptime Size: usize) type {
                     .kind = cellKind(rnd.random()),
                     .fScore = MaxScore,
                     .gScore = MaxScore,
-                    .weight = rnd.random().intRangeLessThan(usize, 1, MaxWeight),
+                    .weight = rnd.random().intRangeLessThan(u32, 1, MaxWeight),
                 };
             }
         }
@@ -128,12 +132,12 @@ fn AStar(comptime Size: usize) type {
             var rnd = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
 
             for (0..GridSize) |i| {
-                self.grid[i].weight = rnd.random().intRangeLessThan(usize, 1, MaxWeight);
+                self.grid[i].weight = rnd.random().intRangeLessThan(u32, 1, MaxWeight);
             }
         }
 
         /// squared Euclidian distance
-        pub fn heuristic(a: usize, b: usize) usize {
+        pub fn heuristic(a: usize, b: usize) u32 {
             const ia = Position.init(a);
             const ib = Position.init(b);
 
@@ -216,135 +220,16 @@ fn AStar(comptime Size: usize) type {
 
             return .NoPath;
         }
-
-        fn drawRect(index: usize, rectWidth: usize, rectHeight: usize, color: ray.Color) void {
-            const pos = Position.init(index);
-
-            ray.DrawRectangle(
-                @intCast(pos.x * rectWidth),
-                @intCast(pos.y * rectHeight),
-                @intCast(rectWidth),
-                @intCast(rectHeight),
-                color,
-            );
-        }
-
-        fn drawCell(cell: *const Cell, font: ray.Font, index: usize, rectWidth: usize, rectHeight: usize) void {
-            var buff: [32]u8 = undefined;
-
-            if (cell.fScore < MaxScore) {
-                const pos = Position.init(index);
-
-                const x = pos.x * rectWidth;
-                const y = pos.y * rectHeight;
-
-                const fontSize = 20;
-
-                {
-                    const text = std.fmt.bufPrintZ(&buff, "{}/{}", .{ cell.fScore, cell.gScore }) catch unreachable;
-                    const textSize = ray.MeasureTextEx(font, text.ptr, fontSize, 1);
-
-                    ray.DrawTextEx(
-                        font,
-                        text.ptr,
-                        .{
-                            .x = @as(f32, @floatFromInt(x + rectWidth / 2)) - textSize.x / 2,
-                            .y = @as(f32, @floatFromInt(y + rectHeight / 2)) - textSize.y / 2,
-                        },
-                        fontSize,
-                        1,
-                        ray.BLUE,
-                    );
-                }
-
-                {
-                    const text = std.fmt.bufPrintZ(&buff, "w={}", .{cell.weight}) catch unreachable;
-                    const textSize = ray.MeasureTextEx(font, text.ptr, fontSize, 1);
-
-                    ray.DrawTextEx(
-                        font,
-                        text.ptr,
-                        .{
-                            .x = @as(f32, @floatFromInt(x + rectWidth / 2)) - textSize.x / 2,
-                            .y = @as(f32, @floatFromInt(y + rectHeight / 2)) - textSize.y / 2 + fontSize,
-                        },
-                        fontSize,
-                        1,
-                        ray.BLUE,
-                    );
-                }
-            }
-        }
-
-        pub fn draw(self: *const Self, font: ray.Font, width: u32, height: u32, start: usize, end: usize, drawOpenSet: bool, drawClosedSet: bool, drawPath: bool) void {
-            const rectWidth = width / Size;
-            const rectHeight = height / Size;
-
-            if (drawOpenSet) {
-                var openSet = self.openSet.iterator(.{});
-                while (openSet.next()) |open| {
-                    const color: ray.Color = .{
-                        .r = 255, //@intCast(255 * self.grid[open].weight / 10),
-                        .g = 255, //@intCast(255 * self.grid[open].weight / 10),
-                        .b = 0,
-                        .a = 255,
-                    };
-                    drawRect(open, rectWidth, rectHeight, color);
-                }
-            }
-
-            if (drawClosedSet) {
-                var closedSet = self.closedSet.iterator(.{});
-                while (closedSet.next()) |closed| {
-                    const color: ray.Color = .{
-                        .r = 255, //@intCast(255 * self.grid[closed].weight / 10),
-                        .g = 0,
-                        .b = 0,
-                        .a = 255,
-                    };
-                    drawRect(closed, rectWidth, rectHeight, color);
-                }
-            }
-
-            if (drawPath) {
-                var current = end;
-
-                while (current != InvalidIndex) {
-                    const color: ray.Color = .{
-                        .r = 0,
-                        .g = 255, //@intCast(255 * self.grid[current].weight / 10),
-                        .b = 0,
-                        .a = 255,
-                    };
-                    drawRect(current, rectWidth, rectHeight, color);
-
-                    current = self.previous[current];
-                }
-            }
-
-            for (0..GridSize) |current| {
-                const cell = &self.grid[current];
-
-                if (cell.kind == .Wall) {
-                    drawRect(current, rectWidth, rectHeight, ray.BLACK);
-                } else {
-                    drawCell(cell, font, current, rectWidth, rectHeight);
-                }
-            }
-
-            drawRect(start, rectWidth, rectHeight, ray.PINK);
-            drawCell(&self.grid[start], font, start, rectWidth, rectHeight);
-
-            drawRect(end, rectWidth, rectHeight, ray.PINK);
-            drawCell(&self.grid[end], font, end, rectWidth, rectHeight);
-        }
     };
 }
 
 const WindowWidth = 1400;
 const WindowHeight = 1050;
-const CellCount = 15;
+const CellCount = 16;
+const RectWidth = WindowWidth / CellCount;
+const RectHeight = WindowHeight / CellCount;
 const Grid = AStar(CellCount);
+var grid: Grid = .{};
 
 fn drawHelp(font: ray.Font) void {
     const helpTexts = [_][*c]const u8{
@@ -393,7 +278,124 @@ fn drawHelp(font: ray.Font) void {
     }
 }
 
-var grid: Grid = .{};
+fn drawRect(index: usize, color: ray.Color) void {
+    const pos = Grid.Position.init(index);
+
+    ray.DrawRectangle(
+        @intCast(@as(u32, pos.x) * RectWidth),
+        @intCast(@as(u32, pos.y) * RectHeight),
+        @intCast(RectWidth),
+        @intCast(RectHeight),
+        color,
+    );
+}
+
+fn drawCell(cell: *const Grid.Cell, font: ray.Font, index: usize) void {
+    var buff: [32]u8 = undefined;
+
+    if (cell.fScore < Grid.MaxScore) {
+        const pos = Grid.Position.init(index);
+
+        const x = @as(u32, pos.x) * RectWidth;
+        const y = @as(u32, pos.y) * RectHeight;
+
+        const fontSize = 20;
+
+        {
+            const text = std.fmt.bufPrintZ(&buff, "{}/{}", .{ cell.fScore, cell.gScore }) catch unreachable;
+            const textSize = ray.MeasureTextEx(font, text.ptr, fontSize, 1);
+
+            ray.DrawTextEx(
+                font,
+                text.ptr,
+                .{
+                    .x = @as(f32, @floatFromInt(x + RectWidth / 2)) - textSize.x / 2,
+                    .y = @as(f32, @floatFromInt(y + RectHeight / 2)) - textSize.y,
+                },
+                fontSize,
+                1,
+                ray.BLUE,
+            );
+        }
+
+        {
+            const text = std.fmt.bufPrintZ(&buff, "w={}", .{cell.weight}) catch unreachable;
+            const textSize = ray.MeasureTextEx(font, text.ptr, fontSize, 1);
+
+            ray.DrawTextEx(
+                font,
+                text.ptr,
+                .{
+                    .x = @as(f32, @floatFromInt(x + RectWidth / 2)) - textSize.x / 2,
+                    .y = @as(f32, @floatFromInt(y + RectHeight / 2)) - textSize.y + fontSize,
+                },
+                fontSize,
+                1,
+                ray.BLUE,
+            );
+        }
+    }
+}
+
+pub fn drawGrid(font: ray.Font, start: usize, end: usize, drawOpenSet: bool, drawClosedSet: bool, drawPath: bool) void {
+    if (drawOpenSet) {
+        var openSet = grid.openSet.iterator(.{});
+        while (openSet.next()) |open| {
+            const color: ray.Color = .{
+                .r = 255, //@intCast(255 * self.grid[open].weight / 10),
+                .g = 255, //@intCast(255 * self.grid[open].weight / 10),
+                .b = 0,
+                .a = 255,
+            };
+            drawRect(open, color);
+        }
+    }
+
+    if (drawClosedSet) {
+        var closedSet = grid.closedSet.iterator(.{});
+        while (closedSet.next()) |closed| {
+            const color: ray.Color = .{
+                .r = 255, //@intCast(255 * self.grid[closed].weight / 10),
+                .g = 0,
+                .b = 0,
+                .a = 255,
+            };
+            drawRect(closed, color);
+        }
+    }
+
+    if (drawPath) {
+        var current = end;
+
+        while (current != Grid.InvalidIndex) {
+            const color: ray.Color = .{
+                .r = 0,
+                .g = 255, //@intCast(255 * self.grid[current].weight / 10),
+                .b = 0,
+                .a = 255,
+            };
+            drawRect(current, color);
+
+            current = grid.previous[current];
+        }
+    }
+
+    for (0..Grid.GridSize) |current| {
+        const cell = &grid.grid[current];
+
+        if (cell.kind == .Wall) {
+            drawRect(current, ray.BLACK);
+        } else {
+            drawCell(cell, font, current);
+        }
+    }
+
+    drawRect(start, ray.PINK);
+    drawCell(&grid.grid[start], font, start);
+
+    drawRect(end, ray.PINK);
+    drawCell(&grid.grid[end], font, end);
+}
 
 pub fn main() !void {
     ray.InitWindow(WindowWidth, WindowHeight, "A* pathfinding");
@@ -466,7 +468,7 @@ pub fn main() !void {
 
         ray.ClearBackground(ray.WHITE);
 
-        grid.draw(font, WindowWidth, WindowHeight, start.linear(), end.linear(), drawOpenSet, drawClosedSet, drawPath);
+        drawGrid(font, start.linear(), end.linear(), drawOpenSet, drawClosedSet, drawPath);
 
         if (result == .NoPath) {
             const fontSize = 64;
