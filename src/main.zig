@@ -18,34 +18,34 @@ fn AStar(comptime Size: usize) type {
 
         const Self = @This();
 
-        const Index = struct {
+        const Position = struct {
             x: usize,
             y: usize,
 
-            pub fn init(idx: usize) Index {
+            pub fn init(index: usize) Position {
                 return .{
-                    .x = idx % Size,
-                    .y = idx / Size,
+                    .x = index % Size,
+                    .y = index / Size,
                 };
             }
 
-            pub fn index(idx: Index) usize {
-                return idx.y * Size + idx.x;
+            pub fn linear(pos: Position) usize {
+                return pos.y * Size + pos.x;
             }
 
-            pub fn offset(idx: Index, x: i32, y: i32) usize {
-                const ii = @as(i32, @intCast(idx.x)) + x;
-                const jj = @as(i32, @intCast(idx.y)) + y;
+            pub fn offset(pos: Position, x: i32, y: i32) usize {
+                const ii = @as(i32, @intCast(pos.x)) + x;
+                const jj = @as(i32, @intCast(pos.y)) + y;
 
                 if (ii < 0 or ii >= Size) return InvalidIndex;
                 if (jj < 0 or jj >= Size) return InvalidIndex;
 
-                const out: Index = .{
+                const out: Position = .{
                     .x = @intCast(ii),
                     .y = @intCast(jj),
                 };
 
-                return out.index();
+                return out.linear();
             }
         };
 
@@ -77,24 +77,24 @@ fn AStar(comptime Size: usize) type {
         // |0|1|2|
         // |3|x|4|
         // |5|6|7|
-        fn neighbors(index: Index, diag: bool) [8]usize {
+        fn neighbors(pos: Position, diag: bool) [8]usize {
             if (diag) {
                 return .{
-                    index.offset(-1, -1),
-                    index.offset(0, -1),
-                    index.offset(1, -1),
-                    index.offset(-1, 0),
-                    index.offset(1, 0),
-                    index.offset(-1, 1),
-                    index.offset(0, 1),
-                    index.offset(1, 1),
+                    pos.offset(-1, -1),
+                    pos.offset(0, -1),
+                    pos.offset(1, -1),
+                    pos.offset(-1, 0),
+                    pos.offset(1, 0),
+                    pos.offset(-1, 1),
+                    pos.offset(0, 1),
+                    pos.offset(1, 1),
                 };
             } else {
                 return .{
-                    index.offset(0, -1),
-                    index.offset(-1, 0),
-                    index.offset(1, 0),
-                    index.offset(0, 1),
+                    pos.offset(0, -1),
+                    pos.offset(-1, 0),
+                    pos.offset(1, 0),
+                    pos.offset(0, 1),
                     InvalidIndex,
                     InvalidIndex,
                     InvalidIndex,
@@ -109,7 +109,7 @@ fn AStar(comptime Size: usize) type {
             for (0..GridSize) |i| {
                 self.previous[i] = InvalidIndex;
                 self.grid[i] = .{
-                    .neighbors = neighbors(Index.init(i), diag),
+                    .neighbors = neighbors(Position.init(i), diag),
                     .kind = cellKind(rnd.random()),
                     .fScore = MaxScore,
                     .gScore = MaxScore,
@@ -120,7 +120,7 @@ fn AStar(comptime Size: usize) type {
 
         pub fn changeDiag(self: *Self, diag: bool) void {
             for (0..GridSize) |i| {
-                self.grid[i].neighbors = neighbors(Index.init(i), diag);
+                self.grid[i].neighbors = neighbors(Position.init(i), diag);
             }
         }
 
@@ -134,8 +134,8 @@ fn AStar(comptime Size: usize) type {
 
         /// squared Euclidian distance
         pub fn heuristic(a: usize, b: usize) usize {
-            const ia = Index.init(a);
-            const ib = Index.init(b);
+            const ia = Position.init(a);
+            const ib = Position.init(b);
 
             const x = @as(i32, @intCast(ib.x)) - @as(i32, @intCast(ia.x));
             const y = @as(i32, @intCast(ib.y)) - @as(i32, @intCast(ia.y));
@@ -218,25 +218,25 @@ fn AStar(comptime Size: usize) type {
         }
 
         fn drawRect(index: usize, rectWidth: usize, rectHeight: usize, color: ray.Color) void {
-            const idx = Index.init(index);
+            const pos = Position.init(index);
 
             ray.DrawRectangle(
-                @intCast(idx.x * rectWidth),
-                @intCast(idx.y * rectHeight),
+                @intCast(pos.x * rectWidth),
+                @intCast(pos.y * rectHeight),
                 @intCast(rectWidth),
                 @intCast(rectHeight),
                 color,
             );
         }
 
-        fn drawCell(cell: *const Cell, font: ray.Font, idx: usize, rectWidth: usize, rectHeight: usize) void {
+        fn drawCell(cell: *const Cell, font: ray.Font, index: usize, rectWidth: usize, rectHeight: usize) void {
             var buff: [32]u8 = undefined;
 
             if (cell.fScore < MaxScore) {
-                const index = Index.init(idx);
+                const pos = Position.init(index);
 
-                const x = index.x * rectWidth;
-                const y = index.y * rectHeight;
+                const x = pos.x * rectWidth;
+                const y = pos.y * rectHeight;
 
                 const fontSize = 20;
 
@@ -411,11 +411,11 @@ pub fn main() !void {
 
     grid.reset(diag);
 
-    const start: Grid.Index = .{ .x = 0, .y = 0 };
-    var end: Grid.Index = .{ .x = CellCount - 1, .y = CellCount - 1 };
+    const start: Grid.Position = .{ .x = 0, .y = 0 };
+    var end: Grid.Position = .{ .x = CellCount - 1, .y = CellCount - 1 };
 
-    grid.grid[start.index()].kind = .Empty;
-    grid.grid[end.index()].kind = .Empty;
+    grid.grid[start.linear()].kind = .Empty;
+    grid.grid[end.linear()].kind = .Empty;
 
     ray.SetTargetFPS(60);
     while (!ray.WindowShouldClose()) {
@@ -460,13 +460,13 @@ pub fn main() !void {
             end.x += 1;
         }
 
-        const result = grid.find(start.index(), end.index());
+        const result = grid.find(start.linear(), end.linear());
 
         ray.BeginDrawing();
 
         ray.ClearBackground(ray.WHITE);
 
-        grid.draw(font, WindowWidth, WindowHeight, start.index(), end.index(), drawOpenSet, drawClosedSet, drawPath);
+        grid.draw(font, WindowWidth, WindowHeight, start.linear(), end.linear(), drawOpenSet, drawClosedSet, drawPath);
 
         if (result == .NoPath) {
             const fontSize = 64;
