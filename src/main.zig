@@ -3,233 +3,271 @@ const ray = @cImport({
     @cInclude("raylib.h");
 });
 
-fn AStar(comptime Size: u32) type {
-    return struct {
-        const GridSize = Size * Size;
-        const BitSet = std.StaticBitSet(GridSize);
-        const InvalidIndex = std.math.maxInt(usize);
-        const MaxScore = std.math.maxInt(u32);
-        const MaxWeight = 10;
+const AStar = struct {
+    const BitSet = std.DynamicBitSet;
+    const InvalidIndex = std.math.maxInt(usize);
+    const MaxScore = std.math.maxInt(u32);
+    const MaxWeight = 10;
 
-        grid: [GridSize]Cell = undefined,
-        previous: [GridSize]usize = undefined,
-        openSet: BitSet = undefined, // nodes to be evaluated
-        closedSet: BitSet = undefined, // nodes already evaluated
+    size: usize,
+    grid: []Cell = undefined,
+    previous: []usize = undefined,
+    openSet: BitSet = undefined, // nodes to be evaluated
+    closedSet: BitSet = undefined, // nodes already evaluated
 
-        const Self = @This();
-
-        const Position = struct {
-            // this ensures x & y can only hold values between [0, Size-1]
-            // ie: if Size=16 then T=u4
-            const T = std.math.Log2Int(std.meta.Int(.unsigned, Size));
-
-            x: T,
-            y: T,
-
-            pub fn init(index: usize) Position {
-                return .{
-                    .x = @intCast(index % Size),
-                    .y = @intCast(index / Size),
-                };
-            }
-
-            pub fn linear(pos: Position) usize {
-                return pos.y * Size + pos.x;
-            }
-
-            pub fn offset(pos: Position, x: i32, y: i32) usize {
-                const ii = @as(i32, @intCast(pos.x)) + x;
-                const jj = @as(i32, @intCast(pos.y)) + y;
-
-                if (ii < 0 or ii >= Size) return InvalidIndex;
-                if (jj < 0 or jj >= Size) return InvalidIndex;
-
-                const out: Position = .{
-                    .x = @intCast(ii),
-                    .y = @intCast(jj),
-                };
-
-                return out.linear();
-            }
-        };
-
-        const CellKind = enum {
-            Empty,
-            Wall,
-        };
-
-        const ResultKind = enum {
-            NoPath,
-            Path,
-        };
-
-        const Cell = struct {
-            neighbors: [8]usize = undefined,
-            kind: CellKind = undefined,
-            fScore: u32 = undefined,
-            gScore: u32 = undefined,
-            weight: u32 = undefined,
-        };
-
-        fn cellKind(rnd: std.rand.Random) CellKind {
-            if (rnd.float(f32) < 0.3)
-                return .Wall;
-
-            return .Empty;
-        }
-
-        // |0|1|2|
-        // |3|x|4|
-        // |5|6|7|
-        fn neighbors(pos: Position, diag: bool) [8]usize {
-            if (diag) {
-                return .{
-                    pos.offset(-1, -1),
-                    pos.offset(0, -1),
-                    pos.offset(1, -1),
-                    pos.offset(-1, 0),
-                    pos.offset(1, 0),
-                    pos.offset(-1, 1),
-                    pos.offset(0, 1),
-                    pos.offset(1, 1),
-                };
-            } else {
-                return .{
-                    pos.offset(0, -1),
-                    pos.offset(-1, 0),
-                    pos.offset(1, 0),
-                    pos.offset(0, 1),
-                    InvalidIndex,
-                    InvalidIndex,
-                    InvalidIndex,
-                    InvalidIndex,
-                };
-            }
-        }
-
-        pub fn reset(self: *Self, diag: bool) void {
-            var rnd = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
-
-            for (0..GridSize) |i| {
-                self.previous[i] = InvalidIndex;
-                self.grid[i] = .{
-                    .neighbors = neighbors(Position.init(i), diag),
-                    .kind = cellKind(rnd.random()),
-                    .fScore = MaxScore,
-                    .gScore = MaxScore,
-                    .weight = rnd.random().intRangeLessThan(u32, 1, MaxWeight),
-                };
-            }
-        }
-
-        pub fn changeDiag(self: *Self, diag: bool) void {
-            for (0..GridSize) |i| {
-                self.grid[i].neighbors = neighbors(Position.init(i), diag);
-            }
-        }
-
-        pub fn updateWeight(self: *Self) void {
-            var rnd = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
-
-            for (0..GridSize) |i| {
-                self.grid[i].weight = rnd.random().intRangeLessThan(u32, 1, MaxWeight);
-            }
-        }
-
-        /// squared Euclidian distance
-        pub fn heuristic(a: usize, b: usize) u32 {
-            const ia = Position.init(a);
-            const ib = Position.init(b);
-
-            const x = @as(i32, @intCast(ib.x)) - @as(i32, @intCast(ia.x));
-            const y = @as(i32, @intCast(ib.y)) - @as(i32, @intCast(ia.y));
-
-            return @intCast(x * x + y * y);
-        }
-
-        fn lowestScore(self: *Self) usize {
-            var iterator = self.openSet.iterator(.{});
-
-            var current = iterator.next().?;
-            var lowest_fScore = self.grid[current].fScore;
-
-            while (iterator.next()) |node| {
-                if (self.grid[node].kind == .Wall)
-                    continue;
-
-                //std.log.debug("Lowest {} {} {}", .{ node, self.grid[node].fScore, self.grid[node].gScore });
-
-                if (self.grid[node].fScore < lowest_fScore) {
-                    current = node;
-                    lowest_fScore = self.grid[node].fScore;
-                }
-            }
-
-            return current;
-        }
-
-        pub fn find(self: *Self, start: usize, end: usize) ResultKind {
-            self.openSet = BitSet.initEmpty();
-            self.closedSet = BitSet.initEmpty();
-
-            self.openSet.set(start);
-
-            for (0..GridSize) |i| {
-                self.previous[i] = InvalidIndex;
-                self.grid[i].gScore = MaxScore;
-                self.grid[i].fScore = MaxScore;
-            }
-
-            self.grid[start].gScore = 0;
-            self.grid[start].fScore = heuristic(start, end);
-
-            while (self.openSet.count() != 0) {
-                const current = self.lowestScore();
-
-                //std.log.debug("Current {}", .{current});
-
-                if (current == end) {
-                    return .Path;
-                }
-
-                self.openSet.unset(current);
-                self.closedSet.set(current);
-
-                //std.log.debug("Neighbors = {any}", .{self.grid[current].neighbors});
-
-                for (self.grid[current].neighbors) |neighbor| {
-                    if (neighbor >= InvalidIndex) continue;
-                    if (self.closedSet.isSet(neighbor)) continue;
-                    if (self.grid[neighbor].kind == .Wall) continue;
-
-                    const tentative_gScore = self.grid[current].gScore + heuristic(current, neighbor) * self.grid[neighbor].weight;
-
-                    //std.log.debug("Neighbor {}: {}", .{ neighbor, tentative_gScore });
-
-                    if (!self.openSet.isSet(neighbor)) {
-                        self.openSet.set(neighbor);
-                    } else if (tentative_gScore >= self.grid[neighbor].gScore) {
-                        continue;
-                    }
-
-                    self.previous[neighbor] = current;
-                    self.grid[neighbor].gScore = tentative_gScore;
-                    self.grid[neighbor].fScore = tentative_gScore + heuristic(neighbor, end);
-                }
-            }
-
-            return .NoPath;
-        }
+    const Position = struct {
+        x: u16,
+        y: u16,
     };
-}
+
+    const CellKind = enum {
+        Empty,
+        Wall,
+    };
+
+    const ResultKind = enum {
+        NoPath,
+        Path,
+    };
+
+    const Cell = struct {
+        neighbors: [8]usize = undefined,
+        kind: CellKind = undefined,
+        fScore: u32 = undefined,
+        gScore: u32 = undefined,
+        weight: u32 = undefined,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, size: usize) !AStar {
+        const GridSize = size * size;
+
+        var aStart: AStar = .{
+            .size = size,
+            .grid = try allocator.alloc(Cell, GridSize),
+            .previous = try allocator.alloc(usize, GridSize),
+            .openSet = try BitSet.initEmpty(allocator, GridSize),
+            .closedSet = try BitSet.initEmpty(allocator, GridSize),
+        };
+
+        for (0..GridSize) |i| {
+            aStart.grid[i] = .{
+                .neighbors = aStart.neighbors(i, false),
+                .kind = .Empty,
+                .fScore = MaxScore,
+                .gScore = MaxScore,
+                .weight = 0,
+            };
+        }
+
+        return aStart;
+    }
+
+    pub fn deinit(self: *AStar, allocator: std.mem.Allocator) void {
+        allocator.free(self.grid);
+        allocator.free(self.previous);
+        self.openSet.deinit();
+        self.closedSet.deinit();
+        self.* = undefined;
+    }
+
+    pub fn resize(self: *AStar, allocator: std.mem.Allocator, size: usize) !void {
+        if (self.size == size) return;
+
+        self.deinit(allocator);
+        self.* = try AStar.init(allocator, size);
+    }
+
+    pub fn random(self: *AStar) void {
+        const GridSize = self.size * self.size;
+
+        var prng = std.rand.DefaultPrng.init(@intCast(std.time.microTimestamp()));
+        var rnd = prng.random();
+
+        for (0..GridSize) |i| {
+            self.previous[i] = InvalidIndex;
+            self.grid[i].kind = cellKind(rnd);
+            self.grid[i].weight = rnd.intRangeLessThan(u32, 1, MaxWeight);
+        }
+    }
+
+    pub fn initPosition(self: *const AStar, index: usize) Position {
+        return .{
+            .x = @intCast(index % self.size),
+            .y = @intCast(index / self.size),
+        };
+    }
+
+    pub fn linear(self: *const AStar, pos: Position) usize {
+        return pos.y * self.size + pos.x;
+    }
+
+    fn offset(self: *const AStar, pos: Position, x: i32, y: i32) usize {
+        const ii = @as(i32, @intCast(pos.x)) + x;
+        const jj = @as(i32, @intCast(pos.y)) + y;
+
+        if (ii < 0 or ii >= self.size) return InvalidIndex;
+        if (jj < 0 or jj >= self.size) return InvalidIndex;
+
+        const out: Position = .{
+            .x = @intCast(ii),
+            .y = @intCast(jj),
+        };
+
+        return self.linear(out);
+    }
+
+    fn cellKind(rnd: std.rand.Random) CellKind {
+        if (rnd.float(f32) < 0.3)
+            return .Wall;
+
+        return .Empty;
+    }
+
+    // |0|1|2|
+    // |3|x|4|
+    // |5|6|7|
+    fn neighbors(self: *const AStar, index: usize, diag: bool) [8]usize {
+        const pos = self.initPosition(index);
+
+        if (diag) {
+            return .{
+                self.offset(pos, -1, -1),
+                self.offset(pos, 0, -1),
+                self.offset(pos, 1, -1),
+                self.offset(pos, -1, 0),
+                self.offset(pos, 1, 0),
+                self.offset(pos, -1, 1),
+                self.offset(pos, 0, 1),
+                self.offset(pos, 1, 1),
+            };
+        } else {
+            return .{
+                self.offset(pos, 0, -1),
+                self.offset(pos, -1, 0),
+                self.offset(pos, 1, 0),
+                self.offset(pos, 0, 1),
+                InvalidIndex,
+                InvalidIndex,
+                InvalidIndex,
+                InvalidIndex,
+            };
+        }
+    }
+
+    pub fn changeDiag(self: *AStar, diag: bool) void {
+        const GridSize = self.size * self.size;
+
+        for (0..GridSize) |i| {
+            self.grid[i].neighbors = self.neighbors(i, diag);
+        }
+    }
+
+    pub fn updateWeight(self: *AStar) void {
+        const GridSize = self.size * self.size;
+
+        var prng = std.rand.DefaultPrng.init(@intCast(std.time.microTimestamp()));
+        var rnd = prng.random();
+
+        for (0..GridSize) |i| {
+            self.grid[i].weight = rnd.intRangeLessThan(u32, 1, MaxWeight);
+        }
+    }
+
+    /// squared Euclidian distance
+    pub fn heuristic(self: *const AStar, a: usize, b: usize) u32 {
+        const ia = self.initPosition(a);
+        const ib = self.initPosition(b);
+
+        const x = @as(i32, @intCast(ib.x)) - @as(i32, @intCast(ia.x));
+        const y = @as(i32, @intCast(ib.y)) - @as(i32, @intCast(ia.y));
+
+        return @intCast(x * x + y * y);
+    }
+
+    fn lowestScore(self: *AStar) usize {
+        var iterator = self.openSet.iterator(.{});
+
+        var current = iterator.next().?;
+        var lowest_fScore = self.grid[current].fScore;
+
+        while (iterator.next()) |node| {
+            if (self.grid[node].kind == .Wall)
+                continue;
+
+            //std.log.debug("Lowest {} {} {}", .{ node, self.grid[node].fScore, self.grid[node].gScore });
+
+            if (self.grid[node].fScore < lowest_fScore) {
+                current = node;
+                lowest_fScore = self.grid[node].fScore;
+            }
+        }
+
+        return current;
+    }
+
+    pub fn find(self: *AStar, start: usize, end: usize) ResultKind {
+        const GridSize = self.size * self.size;
+
+        self.openSet.setRangeValue(.{ .start = 0, .end = GridSize }, false);
+        self.closedSet.setRangeValue(.{ .start = 0, .end = GridSize }, false);
+
+        self.openSet.set(start);
+
+        for (0..GridSize) |i| {
+            self.previous[i] = InvalidIndex;
+            self.grid[i].gScore = MaxScore;
+            self.grid[i].fScore = MaxScore;
+        }
+
+        self.grid[start].gScore = 0;
+        self.grid[start].fScore = self.heuristic(start, end);
+
+        while (self.openSet.count() != 0) {
+            const current = self.lowestScore();
+
+            //std.log.debug("Current {}", .{current});
+
+            if (current == end) {
+                return .Path;
+            }
+
+            self.openSet.unset(current);
+            self.closedSet.set(current);
+
+            //std.log.debug("Neighbors = {any}", .{self.grid[current].neighbors});
+
+            for (self.grid[current].neighbors) |neighbor| {
+                if (neighbor >= InvalidIndex) continue;
+                if (self.closedSet.isSet(neighbor)) continue;
+                if (self.grid[neighbor].kind == .Wall) continue;
+
+                const tentative_gScore = self.grid[current].gScore + self.heuristic(current, neighbor) * self.grid[neighbor].weight;
+
+                //std.log.debug("Neighbor {}: {}", .{ neighbor, tentative_gScore });
+
+                if (!self.openSet.isSet(neighbor)) {
+                    self.openSet.set(neighbor);
+                } else if (tentative_gScore >= self.grid[neighbor].gScore) {
+                    continue;
+                }
+
+                self.previous[neighbor] = current;
+                self.grid[neighbor].gScore = tentative_gScore;
+                self.grid[neighbor].fScore = tentative_gScore + self.heuristic(neighbor, end);
+            }
+        }
+
+        return .NoPath;
+    }
+};
 
 const WindowWidth = 1400;
 const WindowHeight = 1050;
-const CellCount = 16;
-const RectWidth = WindowWidth / CellCount;
-const RectHeight = WindowHeight / CellCount;
-const Grid = AStar(CellCount);
-var grid: Grid = .{};
+var CellCount: u16 = 16;
+var RectWidth: u16 = 0;
+var RectHeight: u16 = 0;
+
+var grid: AStar = undefined;
 
 fn drawHelp(font: ray.Font) void {
     const helpTexts = [_][*c]const u8{
@@ -279,7 +317,7 @@ fn drawHelp(font: ray.Font) void {
 }
 
 fn drawRect(index: usize, color: ray.Color) void {
-    const pos = Grid.Position.init(index);
+    const pos = grid.initPosition(index);
 
     ray.DrawRectangle(
         @intCast(@as(u32, pos.x) * RectWidth),
@@ -290,11 +328,11 @@ fn drawRect(index: usize, color: ray.Color) void {
     );
 }
 
-fn drawCell(cell: *const Grid.Cell, font: ray.Font, index: usize) void {
+fn drawCell(cell: *const AStar.Cell, font: ray.Font, index: usize) void {
     var buff: [32]u8 = undefined;
 
-    if (cell.fScore < Grid.MaxScore) {
-        const pos = Grid.Position.init(index);
+    if (cell.fScore < AStar.MaxScore) {
+        const pos = grid.initPosition(index);
 
         const x = @as(u32, pos.x) * RectWidth;
         const y = @as(u32, pos.y) * RectHeight;
@@ -367,7 +405,7 @@ pub fn drawGrid(font: ray.Font, start: usize, end: usize, drawOpenSet: bool, dra
     if (drawPath) {
         var current = end;
 
-        while (current != Grid.InvalidIndex) {
+        while (current != AStar.InvalidIndex) {
             const color: ray.Color = .{
                 .r = 0,
                 .g = 255, //@intCast(255 * self.grid[current].weight / 10),
@@ -380,7 +418,9 @@ pub fn drawGrid(font: ray.Font, start: usize, end: usize, drawOpenSet: bool, dra
         }
     }
 
-    for (0..Grid.GridSize) |current| {
+    const GridSize = grid.size * grid.size;
+
+    for (0..GridSize) |current| {
         const cell = &grid.grid[current];
 
         if (cell.kind == .Wall) {
@@ -398,6 +438,10 @@ pub fn drawGrid(font: ray.Font, start: usize, end: usize, drawOpenSet: bool, dra
 }
 
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer std.debug.assert(gpa.deinit() == .ok);
+    const allocator = gpa.allocator();
+
     ray.InitWindow(WindowWidth, WindowHeight, "A* pathfinding");
     defer ray.CloseWindow();
 
@@ -411,23 +455,42 @@ pub fn main() !void {
     var drawClosedSet = true;
     var drawPath = true;
 
-    grid.reset(diag);
+    grid = try AStar.init(allocator, CellCount);
+    defer grid.deinit(allocator);
 
-    const start: Grid.Position = .{ .x = 0, .y = 0 };
-    var end: Grid.Position = .{ .x = CellCount - 1, .y = CellCount - 1 };
+    grid.random();
 
-    grid.grid[start.linear()].kind = .Empty;
-    grid.grid[end.linear()].kind = .Empty;
+    const start: AStar.Position = .{ .x = 0, .y = 0 };
+    var end: AStar.Position = .{ .x = CellCount - 1, .y = CellCount - 1 };
 
     ray.SetTargetFPS(60);
     while (!ray.WindowShouldClose()) {
+        if (ray.IsKeyPressed(ray.KEY_LEFT_BRACKET)) {
+            CellCount -= 1;
+            end = .{ .x = CellCount - 1, .y = CellCount - 1 };
+
+            try grid.resize(allocator, CellCount);
+            grid.random();
+        }
+
+        if (ray.IsKeyPressed(ray.KEY_RIGHT_BRACKET)) {
+            CellCount += 1;
+            end = .{ .x = CellCount - 1, .y = CellCount - 1 };
+
+            try grid.resize(allocator, CellCount);
+            grid.random();
+        }
+
+        RectWidth = WindowWidth / CellCount;
+        RectHeight = WindowHeight / CellCount;
+
+        if (ray.IsKeyPressed(ray.KEY_R)) {
+            grid.random();
+        }
+
         if (ray.IsKeyPressed(ray.KEY_D)) {
             diag = !diag;
             grid.changeDiag(diag);
-        }
-
-        if (ray.IsKeyPressed(ray.KEY_R)) {
-            grid.reset(diag);
         }
 
         if (ray.IsKeyPressed(ray.KEY_W)) {
@@ -462,13 +525,13 @@ pub fn main() !void {
             end.x += 1;
         }
 
-        const result = grid.find(start.linear(), end.linear());
+        const result = grid.find(grid.linear(start), grid.linear(end));
 
         ray.BeginDrawing();
 
         ray.ClearBackground(ray.WHITE);
 
-        drawGrid(font, start.linear(), end.linear(), drawOpenSet, drawClosedSet, drawPath);
+        drawGrid(font, grid.linear(start), grid.linear(end), drawOpenSet, drawClosedSet, drawPath);
 
         if (result == .NoPath) {
             const fontSize = 64;
