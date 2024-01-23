@@ -3,6 +3,29 @@ const ray = @cImport({
     @cInclude("raylib.h");
 });
 
+const Position = struct {
+    x: u16,
+    y: u16,
+};
+
+const CellKind = enum {
+    Empty,
+    Wall,
+};
+
+const ResultKind = enum {
+    NoPath,
+    Path,
+};
+
+const Cell = struct {
+    neighbors: [8]usize = undefined,
+    kind: CellKind = undefined,
+    fScore: u32 = undefined,
+    gScore: u32 = undefined,
+    weight: u32 = undefined,
+};
+
 const AStar = struct {
     const BitSet = std.DynamicBitSet;
     const InvalidIndex = std.math.maxInt(usize);
@@ -14,29 +37,6 @@ const AStar = struct {
     previous: []usize = undefined,
     openSet: BitSet = undefined, // nodes to be evaluated
     closedSet: BitSet = undefined, // nodes already evaluated
-
-    const Position = struct {
-        x: u16,
-        y: u16,
-    };
-
-    const CellKind = enum {
-        Empty,
-        Wall,
-    };
-
-    const ResultKind = enum {
-        NoPath,
-        Path,
-    };
-
-    const Cell = struct {
-        neighbors: [8]usize = undefined,
-        kind: CellKind = undefined,
-        fScore: u32 = undefined,
-        gScore: u32 = undefined,
-        weight: u32 = undefined,
-    };
 
     pub fn init(allocator: std.mem.Allocator, size: usize) !AStar {
         const GridSize = size * size;
@@ -90,14 +90,14 @@ const AStar = struct {
         }
     }
 
-    pub fn initPosition(self: *const AStar, index: usize) Position {
+    pub fn position(self: *const AStar, index: usize) Position {
         return .{
             .x = @intCast(index % self.size),
             .y = @intCast(index / self.size),
         };
     }
 
-    pub fn linear(self: *const AStar, pos: Position) usize {
+    pub fn linearIndex(self: *const AStar, pos: Position) usize {
         return pos.y * self.size + pos.x;
     }
 
@@ -113,7 +113,7 @@ const AStar = struct {
             .y = @intCast(jj),
         };
 
-        return self.linear(out);
+        return self.linearIndex(out);
     }
 
     fn cellKind(rnd: std.rand.Random) CellKind {
@@ -127,7 +127,7 @@ const AStar = struct {
     // |3|x|4|
     // |5|6|7|
     fn neighbors(self: *const AStar, index: usize, diag: bool) [8]usize {
-        const pos = self.initPosition(index);
+        const pos = self.position(index);
 
         if (diag) {
             return .{
@@ -174,12 +174,9 @@ const AStar = struct {
     }
 
     /// squared Euclidian distance
-    pub fn heuristic(self: *const AStar, a: usize, b: usize) u32 {
-        const ia = self.initPosition(a);
-        const ib = self.initPosition(b);
-
-        const x = @as(i32, @intCast(ib.x)) - @as(i32, @intCast(ia.x));
-        const y = @as(i32, @intCast(ib.y)) - @as(i32, @intCast(ia.y));
+    pub fn heuristic(a: Position, b: Position) u32 {
+        const x = @as(i32, @intCast(b.x)) - @as(i32, @intCast(a.x));
+        const y = @as(i32, @intCast(b.y)) - @as(i32, @intCast(a.y));
 
         return @intCast(x * x + y * y);
     }
@@ -205,13 +202,15 @@ const AStar = struct {
         return current;
     }
 
-    pub fn find(self: *AStar, start: usize, end: usize) ResultKind {
+    pub fn find(self: *AStar, start: Position, end: Position) ResultKind {
         const GridSize = self.size * self.size;
+        const startIndex = self.linearIndex(start);
+        const endIndex = self.linearIndex(end);
 
         self.openSet.setRangeValue(.{ .start = 0, .end = GridSize }, false);
         self.closedSet.setRangeValue(.{ .start = 0, .end = GridSize }, false);
 
-        self.openSet.set(start);
+        self.openSet.set(startIndex);
 
         for (0..GridSize) |i| {
             self.previous[i] = InvalidIndex;
@@ -219,15 +218,15 @@ const AStar = struct {
             self.grid[i].fScore = MaxScore;
         }
 
-        self.grid[start].gScore = 0;
-        self.grid[start].fScore = self.heuristic(start, end);
+        self.grid[startIndex].gScore = 0;
+        self.grid[startIndex].fScore = heuristic(start, end);
 
         while (self.openSet.count() != 0) {
             const current = self.lowestScore();
 
             //std.log.debug("Current {}", .{current});
 
-            if (current == end) {
+            if (current == endIndex) {
                 return .Path;
             }
 
@@ -241,7 +240,7 @@ const AStar = struct {
                 if (self.closedSet.isSet(neighbor)) continue;
                 if (self.grid[neighbor].kind == .Wall) continue;
 
-                const tentative_gScore = self.grid[current].gScore + self.heuristic(current, neighbor) * self.grid[neighbor].weight;
+                const tentative_gScore = self.grid[current].gScore + heuristic(self.position(current), self.position(neighbor)) * self.grid[neighbor].weight;
 
                 //std.log.debug("Neighbor {}: {}", .{ neighbor, tentative_gScore });
 
@@ -253,7 +252,7 @@ const AStar = struct {
 
                 self.previous[neighbor] = current;
                 self.grid[neighbor].gScore = tentative_gScore;
-                self.grid[neighbor].fScore = tentative_gScore + self.heuristic(neighbor, end);
+                self.grid[neighbor].fScore = tentative_gScore + heuristic(self.position(neighbor), end);
             }
         }
 
@@ -317,7 +316,7 @@ fn drawHelp(font: ray.Font) void {
 }
 
 fn drawRect(index: usize, color: ray.Color) void {
-    const pos = grid.initPosition(index);
+    const pos = grid.position(index);
 
     ray.DrawRectangle(
         @intCast(@as(u32, pos.x) * RectWidth),
@@ -328,11 +327,13 @@ fn drawRect(index: usize, color: ray.Color) void {
     );
 }
 
-fn drawCell(cell: *const AStar.Cell, font: ray.Font, index: usize) void {
+fn drawCell(index: usize, font: ray.Font) void {
     var buff: [32]u8 = undefined;
 
+    const cell = &grid.grid[index];
+
     if (cell.fScore < AStar.MaxScore) {
-        const pos = grid.initPosition(index);
+        const pos = grid.position(index);
 
         const x = @as(u32, pos.x) * RectWidth;
         const y = @as(u32, pos.y) * RectHeight;
@@ -375,7 +376,7 @@ fn drawCell(cell: *const AStar.Cell, font: ray.Font, index: usize) void {
     }
 }
 
-pub fn drawGrid(font: ray.Font, start: usize, end: usize, drawOpenSet: bool, drawClosedSet: bool, drawPath: bool) void {
+pub fn drawGrid(font: ray.Font, start: Position, end: Position, drawOpenSet: bool, drawClosedSet: bool, drawPath: bool) void {
     if (drawOpenSet) {
         var openSet = grid.openSet.iterator(.{});
         while (openSet.next()) |open| {
@@ -403,7 +404,7 @@ pub fn drawGrid(font: ray.Font, start: usize, end: usize, drawOpenSet: bool, dra
     }
 
     if (drawPath) {
-        var current = end;
+        var current = grid.linearIndex(end);
 
         while (current != AStar.InvalidIndex) {
             const color: ray.Color = .{
@@ -426,15 +427,15 @@ pub fn drawGrid(font: ray.Font, start: usize, end: usize, drawOpenSet: bool, dra
         if (cell.kind == .Wall) {
             drawRect(current, ray.BLACK);
         } else {
-            drawCell(cell, font, current);
+            drawCell(current, font);
         }
     }
 
-    drawRect(start, ray.PINK);
-    drawCell(&grid.grid[start], font, start);
+    drawRect(grid.linearIndex(start), ray.PINK);
+    drawCell(grid.linearIndex(start), font);
 
-    drawRect(end, ray.PINK);
-    drawCell(&grid.grid[end], font, end);
+    drawRect(grid.linearIndex(end), ray.PINK);
+    drawCell(grid.linearIndex(end), font);
 }
 
 pub fn main() !void {
@@ -460,8 +461,8 @@ pub fn main() !void {
 
     grid.random();
 
-    const start: AStar.Position = .{ .x = 0, .y = 0 };
-    var end: AStar.Position = .{ .x = CellCount - 1, .y = CellCount - 1 };
+    const start: Position = .{ .x = 0, .y = 0 };
+    var end: Position = .{ .x = CellCount - 1, .y = CellCount - 1 };
 
     ray.SetTargetFPS(60);
     while (!ray.WindowShouldClose()) {
@@ -525,13 +526,13 @@ pub fn main() !void {
             end.x += 1;
         }
 
-        const result = grid.find(grid.linear(start), grid.linear(end));
+        const result = grid.find(start, end);
 
         ray.BeginDrawing();
 
         ray.ClearBackground(ray.WHITE);
 
-        drawGrid(font, grid.linear(start), grid.linear(end), drawOpenSet, drawClosedSet, drawPath);
+        drawGrid(font, start, end, drawOpenSet, drawClosedSet, drawPath);
 
         if (result == .NoPath) {
             const fontSize = 64;
